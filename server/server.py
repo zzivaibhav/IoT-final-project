@@ -292,18 +292,22 @@ def handle_uplink(device_id, app_message, ttn_message):
     message_type = app_message.get('type')
     timestamp = time.time()
     
+    # Get the real TTN device ID for downlinks
+    ttn_device_id = device_id  # This is already the correct TTN device ID from the topic
+    app_device_id = app_message.get('id', device_id)  # Device ID from application message
+    
     print(f"[{datetime.now().strftime('%H:%M:%S')}] {device_id}: {message_type}")
     
     # Log the message
     data_logger.log_message(device_id, message_type, ttn_message)
     
-    # Update device as active
+    # Update device as active (use TTN device ID for tracking)
     device_manager.update_device(device_id, timestamp)
     
     # Check for buffered messages for this device
     buffered_msg = device_manager.get_buffered_message(device_id)
     if buffered_msg:
-        send_downlink(device_id, buffered_msg)
+        send_downlink(device_id, buffered_msg)  # Use TTN device ID for downlink
         stats.increment('commands_delivered')
         print(f"Delivered buffered message to {device_id}")
         
@@ -324,7 +328,7 @@ def handle_uplink(device_id, app_message, ttn_message):
     elif message_type == "DISCOVER":
         stats.increment('discover_count')
         device_manager.record_discover_time(device_id)
-        handle_discover(device_id)
+        handle_discover(device_id)  # Use TTN device ID
         
     elif message_type == "COMMAND":
         stats.increment('command_count')
@@ -427,12 +431,21 @@ def send_downlink(device_id, message):
         
         # Publish to TTN downlink topic
         topic = f"v3/{TTN_APP_ID}/devices/{device_id}/down/push"
-        mqtt_client.publish(topic, json.dumps(downlink_message))
+        
+        print(f"DEBUG: Sending downlink to device_id: {device_id}")
+        print(f"DEBUG: Topic: {topic}")
+        print(f"DEBUG: Payload: {payload}")
+        print(f"DEBUG: Base64 payload: {payload_b64}")
+        
+        result = mqtt_client.publish(topic, json.dumps(downlink_message))
+        print(f"DEBUG: MQTT publish result: {result.rc}")
         
         print(f"Sent downlink to {device_id}: {message['type']}")
         
     except Exception as e:
         print(f"Error sending downlink to {device_id}: {e}")
+        import traceback
+        traceback.print_exc()
 
 def print_stats():
     while True:

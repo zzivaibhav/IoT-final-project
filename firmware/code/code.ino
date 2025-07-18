@@ -62,8 +62,13 @@ void setup() {
     Serial.begin(115200);
     Serial.println(F("Starting LoRaWAN Peer Messaging"));
     
-    // Generate device ID from MAC
-    deviceId = String(ESP.getEfuseMac(), HEX);
+    // Use TTN DevEUI as device ID (convert from array to hex string)
+    deviceId = "";
+    for (int i = 0; i < 8; i++) {
+        if (DEVEUI[i] < 0x10) deviceId += "0";
+        deviceId += String(DEVEUI[i], HEX);
+    }
+    deviceId = "eui-" + deviceId;
     Serial.println("Device ID: " + deviceId);
     
     // LMIC init
@@ -233,6 +238,8 @@ void onEvent (ev_t ev) {
                 Serial.print(LMIC.dataLen);
                 Serial.println(F(" bytes of payload"));
                 handleDownlink();
+            } else {
+                Serial.println(F("No downlink received"));
             }
             os_setTimedCallback(&sendjob, os_getTime()+sec2osticks(60), do_send);
             break;
