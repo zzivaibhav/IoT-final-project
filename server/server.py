@@ -269,24 +269,52 @@ def on_message(client, userdata, msg):
         traceback.print_exc()
 
 def handle_binary_uplink(device_id, payload_bytes, ttn_message):
-    """Handle binary payload from devices that don't send JSON"""
     timestamp = time.time()
-    
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] {device_id}: Binary payload ({len(payload_bytes)} bytes)")
-    
-    # Update device as active (even for binary payloads)
     device_manager.update_device(device_id, timestamp)
     
-    # Check for buffered messages for this device
-    buffered_msg = device_manager.get_buffered_message(device_id)
-    if buffered_msg:
-        send_downlink(device_id, buffered_msg)
-        stats.increment('commands_delivered')
-        print(f"Delivered buffered message to {device_id}")
+    if len(payload_bytes) < 1:
+        print(f"Invalid binary payload from {device_id}")
+        return
     
-    # You can add specific binary payload parsing here if needed
-    # For now, just treat it as a keepalive-like message
-    stats.increment('keepalive_count')
+    msg_type = payload_bytes[0]
+    if msg_type == 0x01:  # KEEPALIVE
+        stats.increment('keepalive_count')
+        print_event_stats()  # Show real-time stats
+        data_logger.log_message(device_id, "KEEPALIVE", ttn_message)
+        # Check for buffered messages
+        buffered_msg = device_manager.get_buffered_message(device_id)
+        if buffered_msg:
+            send_downlink(device_id, buffered_msg)
+            stats.increment('commands_delivered')
+            data_logger.log_command_delivery(
+                buffered_msg.get('id', 'unknown'), device_id,
+                buffered_msg.get('message', ''), buffered_msg.get('buffered_time', 0),
+                delivered=True
+            )
+    elif msg_type == 0x02:  # DISCOVER
+        stats.increment('discover_count')
+        print_event_stats()  # Show real-time stats
+        device_manager.record_discover_time(device_id)
+        handle_discover(device_id)  # Send roster immediately
+    elif msg_type == 0x03:  # COMMAND
+        stats.increment('command_count')
+        print_event_stats()  # Show real-time stats
+        if len(payload_bytes) >= 9:
+            target_id = payload_bytes[1:9].decode('utf-8', errors='ignore')
+            message = payload_bytes[9:].decode('utf-8', errors='ignore')
+            device_manager.record_command_time(device_id, target_id, message)
+            command_message = {
+                "type": "COMMAND", "id": device_id, "message": message,
+                "timestamp": timestamp, "buffered_time": timestamp
+            }
+            device_manager.buffer_message(target_id, command_message)
+            data_logger.log_command_delivery(device_id, target_id, message, timestamp)
+    elif msg_type == 0x04:  # ACK
+        stats.increment('ack_count')
+        print_event_stats()  # Show real-time stats
+        if len(payload_bytes) >= 9:
+            target_id = payload_bytes[1:9].decode('utf-8', errors='ignore')
+            handle_ack(device_id, {"target": target_id})
 
 def handle_uplink(device_id, app_message, ttn_message):
     message_type = app_message.get('type')
@@ -304,38 +332,40 @@ def handle_uplink(device_id, app_message, ttn_message):
     # Update device as active (use TTN device ID for tracking)
     device_manager.update_device(device_id, timestamp)
     
-    # Check for buffered messages for this device
-    buffered_msg = device_manager.get_buffered_message(device_id)
-    if buffered_msg:
-        send_downlink(device_id, buffered_msg)  # Use TTN device ID for downlink
-        stats.increment('commands_delivered')
-        print(f"Delivered buffered message to {device_id}")
-        
-        # Log command delivery
-        data_logger.log_command_delivery(
-            buffered_msg.get('id', 'unknown'),
-            device_id,
-            buffered_msg.get('message', ''),
-            buffered_msg.get('buffered_time', 0),
-            delivered=True
-        )
-    
     # Handle different message types
     if message_type == "KEEPALIVE":
         stats.increment('keepalive_count')
-        # No specific action needed for keepalive
+        print_event_stats()  # Show real-time stats
+        # Check for buffered messages for this device
+        buffered_msg = device_manager.get_buffered_message(device_id)
+        if buffered_msg:
+            send_downlink(device_id, buffered_msg)  # Use TTN device ID for downlink
+            stats.increment('commands_delivered')
+            print(f"Delivered buffered message to {device_id}")
+            
+            # Log command delivery
+            data_logger.log_command_delivery(
+                buffered_msg.get('id', 'unknown'),
+                device_id,
+                buffered_msg.get('message', ''),
+                buffered_msg.get('buffered_time', 0),
+                delivered=True
+            )
         
     elif message_type == "DISCOVER":
         stats.increment('discover_count')
+        print_event_stats()  # Show real-time stats
         device_manager.record_discover_time(device_id)
-        handle_discover(device_id)  # Use TTN device ID
+        handle_discover(device_id)  # Send roster immediately for Class A compatibility
         
     elif message_type == "COMMAND":
         stats.increment('command_count')
+        print_event_stats()  # Show real-time stats
         handle_command(device_id, app_message)
         
     elif message_type == "ACK":
         stats.increment('ack_count')
+        print_event_stats()  # Show real-time stats
         handle_ack(device_id, app_message)
 
 def handle_discover(device_id):
@@ -360,9 +390,9 @@ def handle_discover(device_id):
     send_downlink(device_id, roster_message)
     stats.increment('roster_sent')
     
-    print(f"Sent roster to {device_id}: {len(roster_message['devices'])} active devices")
-    if response_delay:
-        print(f"  Response delay: {response_delay:.1f} ms")
+   # print(f"Sent roster to {device_id}: {len(roster_message['devices'])} active devices")
+    # if response_delay:
+    #     print(f"  Response delay: {response_delay:.1f} ms")
 
 def handle_command(device_id, app_message):
     target_id = app_message.get('target')
@@ -416,40 +446,70 @@ def handle_ack(device_id, app_message):
         print(f"ACK from {device_id} to {target_id}")
 
 def send_downlink(device_id, message):
-    try:
-        # Create TTN downlink message
-        payload = json.dumps(message)
-        payload_b64 = base64.b64encode(payload.encode()).decode()
-        
-        downlink_message = {
-            "downlinks": [{
-                "f_port": 1,
-                "frm_payload": payload_b64,
-                "priority": "NORMAL"
-            }]
-        }
-        
-        # Publish to TTN downlink topic
-        topic = f"v3/{TTN_APP_ID}/devices/{device_id}/down/push"
-        
-        print(f"DEBUG: Sending downlink to device_id: {device_id}")
-        print(f"DEBUG: Topic: {topic}")
-        print(f"DEBUG: Payload: {payload}")
-        print(f"DEBUG: Base64 payload: {payload_b64}")
-        
-        result = mqtt_client.publish(topic, json.dumps(downlink_message))
-        print(f"DEBUG: MQTT publish result: {result.rc}")
-        
-        print(f"Sent downlink to {device_id}: {message['type']}")
-        
-    except Exception as e:
-        print(f"Error sending downlink to {device_id}: {e}")
-        import traceback
-        traceback.print_exc()
+    max_retries = 3
+    max_devices = 5  # Limit to 5 devices to keep payload under 51 bytes (SF7 limit)
+    for attempt in range(max_retries):
+        try:
+            # Create JSON payload to match firmware's expectations
+            payload = json.dumps(message)
+            payload_b64 = base64.b64encode(payload.encode()).decode()
+            
+            # Validate payload size (LoRaWAN limit: ~51 bytes at SF7)
+            payload_bytes = base64.b64decode(payload_b64)
+            if len(payload_bytes) > 51:
+                if message["type"] == "ROSTER":
+                    # Truncate device list to fit within 51 bytes
+                    message["devices"] = message["devices"][:max_devices]
+                    payload = json.dumps(message)
+                    payload_b64 = base64.b64encode(payload.encode()).decode()
+                   # print(f"Truncated ROSTER to {len(message['devices'])} devices for {device_id}")
+                else:
+                    print(f"Payload too large for {device_id}: {len(payload_bytes)} bytes")
+                    data_logger.log_message(device_id, message["type"], {}, success=False)
+                    return
+            
+            downlink_message = {
+                "downlinks": [{
+                    "f_port": 1,
+                    "frm_payload": payload_b64,
+                    "priority": "NORMAL"
+                }]
+            }
+            
+            # Publish to TTN downlink topic
+            topic = f"v3/{TTN_APP_ID}/devices/{device_id}/down/push"
+            result = mqtt_client.publish(topic, json.dumps(downlink_message))
+            
+            if result.rc == mqtt.MQTT_ERR_SUCCESS:
+               # print(f"Downlink sent to {device_id}: {message['type']} (Attempt {attempt + 1})")
+                data_logger.log_message(device_id, message["type"], {}, success=True)
+                return
+            else:
+                print(f"Downlink failed for {device_id}: MQTT error {result.rc} (Attempt {attempt + 1})")
+                data_logger.log_message(device_id, message["type"], {}, success=False)
+                time.sleep(1)
+        except Exception as e:
+            print(f"Error sending downlink to {device_id}: {e} (Attempt {attempt + 1})")
+            data_logger.log_message(device_id, message["type"], {}, success=False)
+            time.sleep(1)
+    print(f"Failed to send downlink to {device_id} after {max_retries} attempts")
+    data_logger.log_message(device_id, message["type"], {}, success=False)
 
-def print_stats():
+def print_event_stats():
+    """Print real-time statistics when events occur"""
+    current_stats = stats.get_stats()
+    active_devices = device_manager.get_active_devices()
+    
+    print(f"[STATS] Uplinks: {current_stats['total_uplinks']} | "
+          f"Keepalives: {current_stats['keepalive_count']} | "
+          f"Discovers: {current_stats['discover_count']} | "
+          f"Commands: {current_stats['command_count']} | "
+          f"Active devices: {len(active_devices)}")
+
+def print_periodic_stats():
+    """Print detailed statistics every 2 minutes"""
     while True:
-        time.sleep(30)  # Print stats every 30 seconds
+        time.sleep(120)  # Print detailed stats every 2 minutes
         current_stats = stats.get_stats()
         print("\n" + "="*60)
         print("LORAWAN PEER MESSAGING SYSTEM STATISTICS")
@@ -521,7 +581,7 @@ def main():
         return
     
     # Start statistics thread
-    stats_thread = threading.Thread(target=print_stats, daemon=True)
+    stats_thread = threading.Thread(target=print_periodic_stats, daemon=True)
     stats_thread.start()
     
     # Start MQTT loop
