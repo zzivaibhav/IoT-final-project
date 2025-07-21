@@ -106,28 +106,40 @@ def process_uplink(client, device_id, payload, rssi, snr):
         update_active_devices(device_id)
         log_message(device_id, "DISCOVER", rssi, snr)
         
-        # Send roster
-        roster = get_roster()
-        # Extract device ID suffix for roster (last 2 bytes of DevEUI)
-        roster_devices = []
-        for dev_id in roster:
-            if dev_id != device_id:  # Exclude requesting device
-                # Extract last 2 bytes from device ID like "eui-617dd6c4ee40e566"
-                if dev_id.startswith("eui-"):
-                    hex_part = dev_id[4:]  # Remove "eui-" prefix
-                    # Take last 2 bytes (4 hex chars) and convert to bytes
-                    last_bytes = hex_part[-4:]
-                    roster_devices.append(int(last_bytes[:2], 16))  # First byte
-                    roster_devices.append(int(last_bytes[2:], 16))  # Second byte
-        
-        roster_payload = [ROSTER_MSG] + roster_devices
-        send_downlink(client, device_id, roster_payload)
-        
-        print(f"Sent roster to {device_id}: {roster} -> payload: {roster_payload}")
+        # Check if device has pending commands
+        if device_id in command_queue and command_queue[device_id]:
+            command = command_queue[device_id].pop(0)
+            send_downlink(client, device_id, command)
+            print(f"Delivered queued command to {device_id}")
+        else:
+            # Send roster
+            roster = get_roster()
+            # Extract device ID suffix for roster (last 2 bytes of DevEUI)
+            roster_devices = []
+            for dev_id in roster:
+                if dev_id != device_id:  # Exclude requesting device
+                    # Extract last 2 bytes from device ID like "eui-617dd6c4ee40e566"
+                    if dev_id.startswith("eui-"):
+                        hex_part = dev_id[4:]  # Remove "eui-" prefix
+                        # Take last 2 bytes (4 hex chars) and convert to bytes
+                        last_bytes = hex_part[-4:]
+                        roster_devices.append(int(last_bytes[:2], 16))  # First byte
+                        roster_devices.append(int(last_bytes[2:], 16))  # Second byte
+            
+            roster_payload = [ROSTER_MSG] + roster_devices
+            send_downlink(client, device_id, roster_payload)
+            
+            print(f"Sent roster to {device_id}: {roster} -> payload: {roster_payload}")
         
     elif msg_type == MSG_COMMAND:
         print(f"COMMAND from {device_id}")
         update_active_devices(device_id)
+        
+        # Check if device has pending commands first
+        if device_id in command_queue and command_queue[device_id]:
+            command = command_queue[device_id].pop(0)
+            send_downlink(client, device_id, command)
+            print(f"Delivered queued command to {device_id}")
         
         if len(payload) >= 3:
             # Reconstruct target device ID from received bytes
@@ -162,6 +174,12 @@ def process_uplink(client, device_id, payload, rssi, snr):
         print(f"ACK from {device_id}")
         update_active_devices(device_id)
         log_message(device_id, "ACK", rssi, snr)
+        
+        # Check if device has pending commands
+        if device_id in command_queue and command_queue[device_id]:
+            command = command_queue[device_id].pop(0)
+            send_downlink(client, device_id, command)
+            print(f"Delivered queued command to {device_id}")
 
 def on_connect(client, userdata, flags, rc):
     """Callback for MQTT connection"""
