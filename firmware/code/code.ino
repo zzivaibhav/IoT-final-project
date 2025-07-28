@@ -27,7 +27,7 @@ const lmic_pinmap lmic_pins = {
 #define MSG_ACK       0x04
 
 // Timing constants (in seconds)
-#define KEEPALIVE_INTERVAL 60  // Send keepalive every 60 seconds
+#define KEEPALIVE_INTERVAL 120  // Send keepalive every 60 seconds
 
 // Global variables
 static osjob_t sendjob;
