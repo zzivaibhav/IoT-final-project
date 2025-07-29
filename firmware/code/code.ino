@@ -67,8 +67,8 @@ void onEvent (ev_t ev) {
             break;
         case EV_JOINED:
             Serial.println(F("Successfully joined LoRaWAN network"));
-   LMIC_setAdrMode(0);
-LMIC_setDrTxpow(DR_SF7, 14);
+        LMIC_setAdrMode(0);
+        LMIC_setDrTxpow(DR_SF9, 14);
             LMIC_setLinkCheckMode(0);
             break;
         case EV_JOIN_FAILED:
